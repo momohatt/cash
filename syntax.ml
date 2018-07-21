@@ -15,9 +15,10 @@ type proc_i = (string * string list) *
 type job_i = proc_i list
 
 let proc_i_to_proc (p : proc_i) : proc =
-  let ((proc, args), (in_f, out_f)) = p in
-  let args_a = Array.of_list args in
-  { command = proc; args = args_a; in_file = in_f; out_file = out_f }
+  let ((cmd, args), (in_f, out_f)) = p in
+  (* include the command string to the args_a *)
+  let args_a = Array.of_list (cmd :: args) in
+  { command = cmd; args = args_a; in_file = in_f; out_file = out_f }
 
 let job_i_to_job (j : job_i) : job =
   List.map proc_i_to_proc j
@@ -40,7 +41,7 @@ let rec string_of_job (j : job) =
   String.concat "" (List.map string_of_proc j)
 
 let string_of_proc_i (p : proc_i) =
-  let ((com, args), (in_file, out_file)) = p in
+  let ((cmd, args), (in_file, out_file)) = p in
   let arg_str = String.concat "" args in
   let in_file_str = match in_file with
     | Some f -> "input: " ^ f ^ "\n"
@@ -50,7 +51,7 @@ let string_of_proc_i (p : proc_i) =
     | Some (f, _) -> "output: " ^ f ^ "\n"
     | None -> ""
   in
-  "command: " ^ com ^ "\n" ^ arg_str ^ "\n" ^ in_file_str ^ out_file_str
+  "command: " ^ cmd ^ "\n" ^ arg_str ^ "\n" ^ in_file_str ^ out_file_str
 
 let rec string_of_job_i (j : job_i) =
   String.concat "" (List.map string_of_proc_i j)

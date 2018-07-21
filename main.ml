@@ -1,14 +1,18 @@
 open Syntax
+open Unix
 
 exception CommandEmpty
 exception NotImplemented
 
 type env = string array
 
-let run_job (j : job) (env : env) =
+let rec run_job (j : job) (env : env) =
   match j with
-  | [p] -> Unix.execvpe p.command p.args env
-  | _ -> raise NotImplemented
+  | [] -> let _ = wait () in ()
+  | p :: px ->
+    (match fork () with
+     | 0 -> execvpe p.command p.args env
+     | _ -> run_job px env)
 
 let exec_history () =
   raise NotImplemented
@@ -21,7 +25,6 @@ let exec_bg () =
 
 let rec read_exec (env : env) =
   print_string "$ ";
-  flush stdout;
   let input = read_line () in
   (try
      let job_i = Parser.toplevel Lexer.main (Lexing.from_string input) in
@@ -32,17 +35,15 @@ let rec read_exec (env : env) =
          | "history" -> exec_history ()
          | "fg" -> exec_fg ()
          | "bg" -> exec_bg ()
-         | _ -> run_job job env)
+         | _ -> run_job job env; read_exec env)
    with
    | Parsing.Parse_error -> print_string "Invalid input."; read_exec env
-   | Failure msg -> (match msg with
-       | "lexing: empty token" -> ()
-       | _ -> print_string (msg ^ "\n") ; read_exec env))
+   | End_of_file -> ())
 
 
 let rec read_print () =
   print_string "$ ";
-  flush stdout;
+  flush Pervasives.stdout;
   let input = read_line () in
   let job_i = Parser.toplevel Lexer.main (Lexing.from_string input) in
   let job = Syntax.job_i_to_job job_i in
@@ -50,7 +51,7 @@ let rec read_print () =
    read_print ())
 
 let _ =
-  let env = Unix.environment () in read_exec env
+  let env = environment () in read_exec env
 
 (*
 let _ =
