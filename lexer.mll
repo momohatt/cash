@@ -1,7 +1,7 @@
-let space = ' ' | '\t' | '\r' | '\n'
-let alphabet = ['a'-'z' 'A'-'Z' '_' '-']
+let space = ' ' | '\t' | '\r'
+let alphabet = ['a'-'z' 'A'-'Z' '_' '-' '.']
 let number = ['0'-'9']
-let names = (alphabet | number)*
+let names = (alphabet | number)+
 
 rule main = parse
 | space+      { main lexbuf }
@@ -9,5 +9,6 @@ rule main = parse
 | "<"         { Parser.LT }
 | ">"         { Parser.GT }
 | ">>"        { Parser.GTGT }
-| names as n  { Parser.STRING n }
-| _           { failwith ("Unknown Token: " ^ Lexing.lexeme lexbuf)}
+| eof         { Parser.EOF }
+| names as n  { Parser.ID n }
+| _           { failwith ("Unknown Token: " ^ Lexing.lexeme lexbuf) }
