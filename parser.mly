@@ -2,8 +2,7 @@
   open Syntax
 %}
 
-%token BAR
-%token LT GT GTGT
+%token BAR LT GT GTGT
 %token <string> STRING
 
 %start toplevel
@@ -12,7 +11,7 @@
 
 toplevel:
   | command_io              { [$1] }
-  | command_io BAR toplevel { $1 :: $3 }
+/*  | command_io BAR toplevel { $1 :: $3 } */
 ;
 
 /* (command * args) * (in_file * (out_file * out_option)) */
