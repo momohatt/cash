@@ -2,7 +2,7 @@
   open Syntax
 %}
 
-%token BAR LT GT GTGT EOF
+%token BAR LT GT GTGT AND EOF
 %token <string> ID
 
 %start toplevel
@@ -10,8 +10,13 @@
 %%
 
 toplevel:
-  | command_io EOF              { [$1] }
-  | command_io BAR toplevel EOF { $1 :: $3 }
+  | commands EOF     { ($1, Foreground) }
+  | commands AND EOF { ($1, Background) }
+;
+
+commands:
+  | command_io              { [$1] }
+  | command_io BAR commands { $1 :: $3 }
 ;
 
 /* (command * args) * (in_file * (out_file * out_option)) */

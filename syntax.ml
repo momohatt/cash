@@ -1,4 +1,6 @@
 type write_opt = TRUNC | APPEND
+type job_status = Running | Stopping | Terminated
+type job_mode   = Foreground | Background
 
 type proc = {
   command  : string;
@@ -7,12 +9,21 @@ type proc = {
   out_file : (string * write_opt) option
 }
 
-type job = proc list
+type job = {
+  procs           : proc list;
+  mutable status  : job_status;
+  mutable mode    : job_mode;
+  mutable job_id  : int;
+  mutable pgid    : int;
+  mutable command : string;
+  nproc           : int;
+  mutable nexited : int;
+}
 
 (* (command * args) * (in_file * (out_file * out_option)) *)
 type proc_i = (string * string list) *
               (string option * ((string * write_opt) option))
-type job_i = proc_i list
+type job_i = (proc_i list * job_mode)
 
 let proc_i_to_proc (p : proc_i) : proc =
   let ((cmd, args), (in_f, out_f)) = p in
@@ -21,24 +32,31 @@ let proc_i_to_proc (p : proc_i) : proc =
   { command = cmd; args = args_a; in_file = in_f; out_file = out_f }
 
 let job_i_to_job (j : job_i) : job =
-  List.map proc_i_to_proc j
+  { procs   = List.map proc_i_to_proc (fst j);
+    status  = Running;
+    mode    = (snd j);
+    job_id  = 0;
+    pgid    = 0;
+    command = "";
+    nproc   = List.length (fst j);
+    nexited = 0; }
 
 
 (*** print functions ***)
 let string_of_proc (p : proc) =
   let arg_str = Array.fold_left (fun acc s -> acc ^ " " ^ s) "args: " p.args in
   let in_file_str = match p.in_file with
-    | Some f -> "input: " ^ f ^ "\n"
+    | Some f -> "input: " ^ f ^ "  "
     | None -> ""
   in
   let out_file_str = match p.out_file with
-    | Some (f, _) -> "output: " ^ f ^ "\n"
+    | Some (f, _) -> "output: " ^ f ^ "  "
     | None -> ""
   in
   "command: " ^ p.command ^ "\n" ^ arg_str ^ "\n" ^ in_file_str ^ out_file_str
 
 let rec string_of_job (j : job) =
-  String.concat "" (List.map string_of_proc j)
+  String.concat "" (List.map string_of_proc j.procs)
 
 let string_of_proc_i (p : proc_i) =
   let ((cmd, args), (in_file, out_file)) = p in
@@ -54,7 +72,7 @@ let string_of_proc_i (p : proc_i) =
   "command: " ^ cmd ^ "\n" ^ arg_str ^ "\n" ^ in_file_str ^ out_file_str
 
 let rec string_of_job_i (j : job_i) =
-  String.concat "" (List.map string_of_proc_i j)
+  String.concat "" (List.map string_of_proc_i (fst j))
 
 let print_proc (p : proc) = print_string (string_of_proc p)
 let print_proc_i (p : proc_i) = print_string (string_of_proc_i p)

@@ -1,5 +1,4 @@
-LIBS = unix
-PACKS = linenoise
+PACKS = linenoise extunix
 SOURCES = syntax.ml lexer.mll parser.mly main.ml
 RESULT  = main
 

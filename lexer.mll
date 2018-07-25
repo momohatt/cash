@@ -9,6 +9,7 @@ rule main = parse
 | "<"         { Parser.LT }
 | ">"         { Parser.GT }
 | ">>"        { Parser.GTGT }
+| "&"         { Parser.AND }
 | eof         { Parser.EOF }
 | names as n  { Parser.ID n }
 | _           { failwith ("Unknown Token: " ^ Lexing.lexeme lexbuf) }
