@@ -10,6 +10,10 @@ type pipe = (file_descr * file_descr)
 let histfilename = ".cash_history"
 let prompt = "$ "
 
+let print_error eno f x =
+  print_string (f ^ ": " ^ (error_message eno) ^ ": " ^ x ^ "\n");
+  flush Pervasives.stdout
+
 let run_job (j : job) (env : env) =
   let nproc = List.length j in
   let pipes = List.map (fun _ -> pipe ()) (List.tl j) in
@@ -75,6 +79,13 @@ let exec_history () =
      | End_of_file -> ())
   in _read_hist_print 0; flush Pervasives.stdout
 
+let exec_cd arg =
+  (try
+     let curr = getcwd () in
+     chdir (curr ^ "/" ^ arg)
+   with
+   | Unix_error (eno, _, x) -> print_error eno "cd" x)
+
 let exec_fg () =
   raise NotImplemented
 
@@ -95,6 +106,7 @@ let rec read_exec (env : env) =
        | j :: jx -> (match j.command with
            | "exit" -> ()
            | "history" -> exec_history (); read_exec env
+           | "cd" -> exec_cd j.args.(1); read_exec env
            | "fg" -> exec_fg ()
            | "bg" -> exec_bg ()
            | _ -> run_job job env; read_exec env)

@@ -3,7 +3,7 @@
 ## description
 
 * a tiny shell implemented in OCaml
-* available built-in commands: `exit`, `history`
+* available built-in commands: `exit`, `history`, `cd`
 
 ## dependency
 
