@@ -83,8 +83,7 @@ let exec_history () =
 
 let exec_cd arg =
   (try
-     let curr = getcwd () in
-     chdir (curr ^ "/" ^ arg)
+     chdir arg
    with
    | Unix_error (eno, _, x) -> print_error eno "cd" x)
 
