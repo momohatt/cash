@@ -56,6 +56,8 @@ let string_of_proc_i (p : proc_i) =
 let rec string_of_job_i (j : job_i) =
   String.concat "" (List.map string_of_proc_i j)
 
+let print_proc (p : proc) = print_string (string_of_proc p)
+let print_proc_i (p : proc_i) = print_string (string_of_proc_i p)
 let print_job (j : job) = print_string (string_of_job j)
 let print_job_i (j : job_i) = print_string (string_of_job_i j)
 
