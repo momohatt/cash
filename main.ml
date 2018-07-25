@@ -65,7 +65,15 @@ let run_job (j : job) (env : env) =
   in _run_job j 0 []
 
 let exec_history () =
-  raise NotImplemented
+  let channel = open_in histfilename in
+  let rec _read_hist_print (n : int) =
+    (try
+       let str = input_line channel in
+       print_string ((string_of_int n) ^ " : " ^ str ^ "\n");
+       _read_hist_print (n + 1)
+     with
+     | End_of_file -> ())
+  in _read_hist_print 0; flush Pervasives.stdout
 
 let exec_fg () =
   raise NotImplemented
@@ -86,7 +94,7 @@ let rec read_exec (env : env) =
        | [] -> raise CommandEmpty
        | j :: jx -> (match j.command with
            | "exit" -> ()
-           | "history" -> exec_history ()
+           | "history" -> exec_history (); read_exec env
            | "fg" -> exec_fg ()
            | "bg" -> exec_bg ()
            | _ -> run_job job env; read_exec env)
