@@ -1,5 +1,5 @@
 let space = ' ' | '\t' | '\r'
-let alphabet = ['a'-'z' 'A'-'Z' '_' '-' '.']
+let alphabet = ['a'-'z' 'A'-'Z' '_' '-' '.' '/']
 let number = ['0'-'9']
 let names = (alphabet | number)+
 
