@@ -38,7 +38,6 @@ let setup_redirect (p : proc) =
      dup2 fd stdout; close fd
    | None -> ())
 
-
 let rec remove (a : 'a) (l : 'a list) =
   match l with
   | [] -> []
@@ -46,10 +45,23 @@ let rec remove (a : 'a) (l : 'a list) =
     | true -> xl
     | false -> x :: (remove a xl)
 
-let rec drop (i : int) (l : 'a list) =
+let rec drop (i : int) (l : 'a list) : ('a * 'a list) =
   match (i, l) with
   | (0, [])      -> raise Invalid_argument
   | (0, x :: xl) -> (x, xl)
   | (n, [])      -> raise Invalid_argument
   | (n, x :: xl) -> let (a, li) = drop (n - 1) xl in (a, x :: li)
+
+let rec extract (i : int) (l : 'a list) : 'a =
+  match (i, l) with
+  | (0, [])      -> raise Invalid_argument
+  | (0, x :: xl) -> x
+  | (n, [])      -> raise Invalid_argument
+  | (n, x :: xl) -> extract (n - 1) xl
+
+let print_job_status (j : job) (i : int) =
+  match j.status with
+  | Running    -> Printf.printf "[%d] (pid: %d) Running: %s\n"    i j.pgid j.command
+  | Stopped    -> Printf.printf "[%d] (pid: %d) Stopped: %s\n"    i j.pgid j.command
+  | Terminated -> Printf.printf "[%d] (pid: %d) Terminated: %s\n" i j.pgid j.command
 

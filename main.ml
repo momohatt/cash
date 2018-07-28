@@ -1,4 +1,5 @@
 open Syntax
+open Utils
 open Unix
 open ExtUnixSpecific
 
@@ -15,12 +16,6 @@ let env = ref [||]
 let print_error eno f x =
   print_string (f ^ ": " ^ (error_message eno) ^ ": " ^ x ^ "\n");
   flush Pervasives.stdout
-
-let print_job_status (j : job) (i : int) =
-  match j.status with
-  | Running    -> Printf.printf "[%d] (pid: %d) Running: %s\n"    i j.pgid j.command
-  | Stopped    -> Printf.printf "[%d] (pid: %d) Stopped: %s\n"    i j.pgid j.command
-  | Terminated -> Printf.printf "[%d] (pid: %d) Terminated: %s\n" i j.pgid j.command
 
 let to_background (j : job) (jbs : job list) =
   tcsetpgrp stdin (getpgid 0);
@@ -43,7 +38,7 @@ let wait_background_job (jbs : job list) =
     let j = List.find has_pid jbs in
     j.nexited <- j.nexited + 1;
     match (j.nexited < j.nproc) with
-    | true -> Utils.remove j jbs
+    | true -> remove j jbs
     | false -> jbs
   in
   (try
@@ -52,6 +47,7 @@ let wait_background_job (jbs : job list) =
      | 0 -> jbs
      | _ -> handle_terminated_proc pid jbs
    with
+   | Not_found -> print_string "hoge"; jbs
    | Unix_error (ECHILD, _, _) -> jbs)
 
 let run_job (j : job) (jbs : job list) =
@@ -67,7 +63,7 @@ let run_job (j : job) (jbs : job list) =
         List.iter (fun pid -> waitpid [] pid |> ignore) cpid
       in
       j.pgid <- pgid;
-      sleepf 0.0005; (* for setpgid to be effective *)
+      sleepf 0.001; (* for setpgid to be effective *)
       _close_pipe_all pipes;
       (match j.mode with
        | Foreground ->
@@ -78,9 +74,9 @@ let run_job (j : job) (jbs : job list) =
     | p :: px ->
       (match fork () with
        | 0 ->
-         Utils.setup_pipes pipes n nproc;
-         Utils.setup_redirect p;
-         Utils.setup_signals Sys.Signal_default;
+         setup_pipes pipes n nproc;
+         setup_redirect p;
+         setup_signals Sys.Signal_default;
          setpgid 0 pgid;
          execvpe p.command p.args !env
        | pid ->
@@ -113,7 +109,7 @@ let exec_fg (args : string array) (jbs : job list) =
        | 1 -> 1
        | _ -> int_of_string args.(1)
      in
-     let (j, newjbs) = Utils.drop (index - 1) jbs in
+     let (j, newjbs) = drop (index - 1) jbs in
      (match j.status with
       | Stopped ->
         j.status <- Running;
@@ -121,15 +117,28 @@ let exec_fg (args : string array) (jbs : job list) =
       | _ -> ());
      j.mode <- Foreground;
      tcsetpgrp stdin j.pgid;
-     print_job_status j index;
-     flush Pervasives.stdout;
+     print_job_status j index; flush Pervasives.stdout;
      wait_foreground_job j newjbs
    with
    | Failure _ -> raise (MainError "Invalid Syntax")
-   | Utils.Invalid_argument -> raise (MainError "No such jobs"))
+   | Invalid_argument -> raise (MainError "No such jobs"))
 
 let exec_bg (args : string array) (jbs : job list) =
-  raise NotImplemented
+  (try
+     let index = match Array.length args with
+       | 1 -> 1
+       | _ -> int_of_string args.(1)
+     in
+     let j = extract (index - 1) jbs in
+     (match j.status with
+      | Stopped ->
+        j.status <- Running;
+        List.iter (fun p -> kill p.pid Sys.sigcont) j.procs
+      | _ -> ());
+     print_job_status j index; flush Pervasives.stdout;
+     jbs
+   with
+   | Invalid_argument -> raise (MainError "No such jobs"))
 
 let exec_jobs (jbs : job list) =
   let id = ref 0 in
@@ -157,13 +166,12 @@ let rec read_exec (ojbs : job list) =
             | "history" -> exec_history (); read_exec jbs
             | "cd" -> exec_cd j.args.(1); read_exec jbs
             | "fg" -> let newjbs = exec_fg j.args jbs in read_exec newjbs
-            | "bg" -> exec_bg j.args jbs
+            | "bg" -> let newjbs = exec_bg j.args jbs in read_exec newjbs
             | "jobs" -> exec_jobs jbs; read_exec jbs
             | _ -> let newjbs = run_job job jbs in read_exec newjbs)
       with
       | Parsing.Parse_error -> print_string "Invalid input.\n"; flush Pervasives.stdout; read_exec jbs
       | End_of_file -> ()))
-
 
 let rec read_print () =
   print_string "$ ";
@@ -179,7 +187,7 @@ let _ =
   LNoise.set_multiline true;
   LNoise.history_load ~filename:histfilename |> ignore;
   LNoise.history_set ~max_length:100 |> ignore;
-  Utils.setup_signals Sys.Signal_ignore;
+  setup_signals Sys.Signal_ignore;
   env := environment (); read_exec []
 
 (*
