@@ -1,8 +1,8 @@
 # cash
 
-## Description
+## Features
 
-* a tiny shell implemented in OCaml
+* supports pipes and redirections
 * available built-in commands: `exit`, `history`, `cd`, `jobs`, `fg`, `bg`
 
 ## Requirements
@@ -20,4 +20,10 @@
     $ make
     $ ./main
 
+## TODO
+
+* pipes with built-in commands (`history | head` doesn't work)
+* shell expansion (`*` and `~`)
+* in/out redirections with stderr
+* command substitution (backquotes)
 
