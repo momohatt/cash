@@ -2,6 +2,7 @@ open Syntax
 open Unix
 open ExtUnixSpecific
 
+exception MainError of string
 exception CommandEmpty
 exception NotImplemented
 
@@ -15,20 +16,43 @@ let print_error eno f x =
   print_string (f ^ ": " ^ (error_message eno) ^ ": " ^ x ^ "\n");
   flush Pervasives.stdout
 
+let print_job_status (j : job) (i : int) =
+  match j.status with
+  | Running    -> Printf.printf "[%d] (pid: %d) Running: %s\n"    i j.pgid j.command
+  | Stopped    -> Printf.printf "[%d] (pid: %d) Stopped: %s\n"    i j.pgid j.command
+  | Terminated -> Printf.printf "[%d] (pid: %d) Terminated: %s\n" i j.pgid j.command
+
 let to_background (j : job) (jbs : job list) =
   tcsetpgrp stdin (getpgid 0);
-  Printf.printf "[%d] %d\n" ((List.length jbs) + 1) j.pgid;
+  print_job_status j ((List.length jbs) + 1);
   flush Pervasives.stdout;
-  j :: jbs
+  jbs @ [j]
 
 let wait_foreground_job (j : job) (jbs : job list) =
   let status = List.hd (List.map (fun p -> waitpid [WUNTRACED] p.pid) j.procs) in
   tcsetpgrp stdin (getpid ());
   match status with
   | (_, WSTOPPED _) ->
-    j.status <- Stopping;
+    j.status <- Stopped;
     to_background j jbs
   | _ -> jbs
+
+let wait_background_job (jbs : job list) =
+  let rec handle_terminated_proc (pid : int) (jbs : job list) =
+    let has_pid j = List.exists (fun p -> p.pid = pid) j.procs in
+    let j = List.find has_pid jbs in
+    j.nexited <- j.nexited + 1;
+    match (j.nexited < j.nproc) with
+    | true -> Utils.remove j jbs
+    | false -> jbs
+  in
+  (try
+     let (pid, status) = waitpid [WNOHANG; WUNTRACED] (-1) in
+     match pid with
+     | 0 -> jbs
+     | _ -> handle_terminated_proc pid jbs
+   with
+   | Unix_error (ECHILD, _, _) -> jbs)
 
 let run_job (j : job) (jbs : job list) =
   let nproc = List.length j.procs in
@@ -83,19 +107,39 @@ let exec_cd arg =
    with
    | Unix_error (eno, _, x) -> print_error eno "cd" x)
 
-let exec_fg (jbs : job list) =
-  raise NotImplemented
+let exec_fg (args : string array) (jbs : job list) =
+  (try
+     let index = match Array.length args with
+       | 1 -> 1
+       | _ -> int_of_string args.(1)
+     in
+     let (j, newjbs) = Utils.drop (index - 1) jbs in
+     (match j.status with
+      | Stopped ->
+        j.status <- Running;
+        List.iter (fun p -> kill p.pid Sys.sigcont) j.procs
+      | _ -> ());
+     j.mode <- Foreground;
+     tcsetpgrp stdin j.pgid;
+     print_job_status j index;
+     flush Pervasives.stdout;
+     wait_foreground_job j newjbs
+   with
+   | Failure _ -> raise (MainError "Invalid Syntax")
+   | Utils.Invalid_argument -> raise (MainError "No such jobs"))
 
-let exec_bg (jbs : job list) =
+let exec_bg (args : string array) (jbs : job list) =
   raise NotImplemented
 
 let exec_jobs (jbs : job list) =
   let id = ref 0 in
-  let _print j = id := !id + 1; Printf.printf "[%d] %s\n" !id j.command in
+  let _print j = id := !id + 1; print_job_status j !id;
+  in
   List.iter _print jbs;
   flush Pervasives.stdout
 
-let rec read_exec (jbs : job list) =
+let rec read_exec (ojbs : job list) =
+  let jbs = wait_background_job ojbs in
   match LNoise.linenoise prompt with
   | None -> () (* terminating the shell *)
   | Some "" -> read_exec jbs
@@ -112,8 +156,8 @@ let rec read_exec (jbs : job list) =
             | "exit" -> ()
             | "history" -> exec_history (); read_exec jbs
             | "cd" -> exec_cd j.args.(1); read_exec jbs
-            | "fg" -> exec_fg jbs
-            | "bg" -> exec_bg jbs
+            | "fg" -> let newjbs = exec_fg j.args jbs in read_exec newjbs
+            | "bg" -> exec_bg j.args jbs
             | "jobs" -> exec_jobs jbs; read_exec jbs
             | _ -> let newjbs = run_job job jbs in read_exec newjbs)
       with

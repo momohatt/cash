@@ -1,5 +1,5 @@
 type write_opt = TRUNC | APPEND
-type job_status = Running | Stopping | Terminated
+type job_status = Running | Stopped | Terminated
 type job_mode   = Foreground | Background
 
 type proc = {
