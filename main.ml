@@ -15,6 +15,13 @@ let print_error eno f x =
   print_string (f ^ ": " ^ (error_message eno) ^ ": " ^ x ^ "\n");
   flush Pervasives.stdout
 
+let _setup_signals (s : Sys.signal_behavior) =
+  Sys.set_signal Sys.sigint  s;
+  Sys.set_signal Sys.sigtstp s;
+  Sys.set_signal Sys.sigttou s;
+  Sys.set_signal Sys.sigttin s;
+  Sys.set_signal Sys.sigquit s
+
 let run_job (j : job) (env : env) =
   let nproc = List.length j.procs in
   let pipes = List.map (fun _ -> pipe ()) (List.tl j.procs) in
@@ -44,7 +51,7 @@ let run_job (j : job) (env : env) =
        dup2 fd stdout; close fd
      | None -> ())
   in
-  let rec _run_job (pl : proc list) (n : int) (cpid : int list) =
+  let rec _run_job (pl : proc list) (n : int) (cpid : int list) (pgid : int) =
     match pl with
     | [] ->
       let rec _close_pipe_all (p : pipe list) =
@@ -57,18 +64,28 @@ let run_job (j : job) (env : env) =
         | [] -> ()
         | pid :: xl -> waitpid [] pid |> ignore; _wait_all xl
       in
-      j.pgid <- List.hd cpid;
+      j.pgid <- pgid;
+      let oldpgid = getpgid 0 in
+      sleepf 0.001; (* for setpgid to be effective *)
+      (match j.mode with
+       | Foreground -> tcsetpgrp stdin pgid
+       | Background -> ());
       _close_pipe_all pipes;
-      _wait_all cpid
+      _wait_all cpid;
+      tcsetpgrp stdin oldpgid;
     | p :: px ->
       (match fork () with
        | 0 ->
          _setup_pipes pipes n;
          _setup_redirect p;
+         _setup_signals Sys.Signal_default;
+         setpgid 0 pgid;
          execvpe p.command p.args env
        | pid ->
-         _run_job px (n + 1) (cpid @ [pid]))
-  in _run_job j.procs 0 []
+         match pgid with
+         | 0 -> _run_job px (n + 1) (pid :: cpid) pid
+         | _ -> _run_job px (n + 1) (pid :: cpid) pgid)
+  in _run_job j.procs 0 [] 0
 
 let exec_history () =
   let channel = open_in histfilename in
@@ -96,28 +113,26 @@ let exec_bg () =
 let rec read_exec (env : env) =
   match LNoise.linenoise prompt with
   | None -> () (* terminating the shell *)
+  | Some "" -> read_exec env
   | Some input ->
-    if (input = "") then
-      read_exec env
-    else
-      (LNoise.history_add input |> ignore;
-       LNoise.history_save histfilename |> ignore;
-       (try
-          let job_i = Parser.toplevel Lexer.main (Lexing.from_string input) in
-          let job = Syntax.job_i_to_job job_i in
-          job.command <- input;
-          match job.procs with
-          | [] -> raise CommandEmpty
-          | j :: jx -> (match j.command with
-              | "exit" -> ()
-              | "history" -> exec_history (); read_exec env
-              | "cd" -> exec_cd j.args.(1); read_exec env
-              | "fg" -> exec_fg ()
-              | "bg" -> exec_bg ()
-              | _ -> run_job job env; read_exec env)
-        with
-        | Parsing.Parse_error -> print_string "Invalid input.\n"; flush Pervasives.stdout; read_exec env
-        | End_of_file -> ()))
+    (LNoise.history_add input |> ignore;
+     LNoise.history_save histfilename |> ignore;
+     (try
+        let job_i = Parser.toplevel Lexer.main (Lexing.from_string input) in
+        let job = Syntax.job_i_to_job job_i in
+        job.command <- input;
+        match job.procs with
+        | [] -> raise CommandEmpty
+        | j :: jx -> (match j.command with
+            | "exit" -> ()
+            | "history" -> exec_history (); read_exec env
+            | "cd" -> exec_cd j.args.(1); read_exec env
+            | "fg" -> exec_fg ()
+            | "bg" -> exec_bg ()
+            | _ -> run_job job env; read_exec env)
+      with
+      | Parsing.Parse_error -> print_string "Invalid input.\n"; flush Pervasives.stdout; read_exec env
+      | End_of_file -> ()))
 
 
 let rec read_print () =
@@ -134,6 +149,7 @@ let _ =
   LNoise.set_multiline true;
   LNoise.history_load ~filename:histfilename |> ignore;
   LNoise.history_set ~max_length:100 |> ignore;
+  _setup_signals Sys.Signal_ignore;
   let env = environment () in read_exec env
 
 (*
