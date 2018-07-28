@@ -4,8 +4,8 @@ open ExtUnixSpecific
 
 exception MainError of string
 exception CommandEmpty
-exception NotImplemented
 exception Invalid_argument
+exception InvalidCommand
 
 type pipe = (file_descr * file_descr)
 
@@ -13,9 +13,8 @@ let histfilename = ".cash_history"
 let prompt = "$ "
 let env = ref [||]
 
-let print_error eno f x =
-  Printf.printf "%s: %s: %s\n" f (error_message eno) x;
-  flush Pervasives.stdout
+let errmsg eno f arg =
+  Printf.sprintf "%s: %s: %s" (error_message eno) f arg
 
 let print_job_status (j : job) (i : int) =
   match j.status with
@@ -73,10 +72,10 @@ let wait_foreground_job (j : job) (jbs : job list) =
   let status = List.hd (List.map (fun p -> waitpid [WUNTRACED] p.pid) j.procs) in
   tcsetpgrp stdin (getpid ());
   match status with
-  | (_, WSTOPPED _) ->
+  | (_, WSTOPPED n) ->
     j.status <- Stopped;
     to_background j jbs
-  | _ -> jbs
+  | _ -> []
 
 let wait_background_job (jbs : job list) =
   let rec handle_terminated_proc (pid : int) (jbs : job list) =
@@ -121,13 +120,22 @@ let run_job (j : job) (jbs : job list) =
          setup_redirect p;
          set_signals Sys.Signal_default;
          setpgid 0 pgid;
-         execvpe p.command p.args !env
+         (try
+            execvpe p.command p.args !env
+          with
+          | Unix_error (ENOENT, "execvpe", cmd) ->
+            prerr_string ("command not found: " ^ cmd ^ "\n");
+            flush Pervasives.stderr;
+            kill 0 Sys.sigkill;
+            raise InvalidCommand)
        | pid ->
          p.pid <- pid;
          match pgid with
          | 0 -> _run_job px (n + 1) (pid :: cpid) pid
          | _ -> _run_job px (n + 1) (pid :: cpid) pgid)
-  in _run_job j.procs 0 [] 0
+  in
+  (try _run_job j.procs 0 [] 0 with
+   | Unix_error (eno, syscall, cmd) -> raise (MainError (errmsg eno syscall cmd)))
 
 let exec_history () =
   let channel = open_in histfilename in
@@ -144,7 +152,7 @@ let exec_cd arg =
   match Array.length arg with
   | 1 -> chdir (getenv "HOME")
   | _ -> (try chdir arg.(1) with
-      | Unix_error (eno, _, x) -> print_error eno "cd" x)
+      | Unix_error (eno, _, x) -> raise (MainError (errmsg eno "cd" x)))
 
 let exec_fg (args : string array) (jbs : job list) =
   (try
@@ -164,7 +172,7 @@ let exec_fg (args : string array) (jbs : job list) =
      print_job_status j index; flush Pervasives.stdout;
      wait_foreground_job j newjbs
    with
-   | Failure _ -> raise (MainError "Invalid Syntax")
+   | Failure _ -> raise (MainError "No such jobs")
    | Invalid_argument -> raise (MainError "No such jobs"))
 
 let exec_bg (args : string array) (jbs : job list) =
@@ -214,7 +222,11 @@ let rec read_exec (ojbs : job list) =
             | "jobs"    -> exec_jobs jbs; read_exec jbs
             | _ -> let newjbs = run_job job jbs in read_exec newjbs)
       with
-      | Parsing.Parse_error -> print_string "Invalid input.\n"; flush Pervasives.stdout; read_exec jbs
+      | Parsing.Parse_error ->
+        prerr_string "Invalid input.\n"; flush Pervasives.stderr; read_exec jbs
+      | MainError msg ->
+        prerr_string (msg ^ "\n"); flush Pervasives.stderr; read_exec jbs
+      | InvalidCommand -> read_exec jbs
       | End_of_file -> ()))
 
 let rec read_print () =

@@ -3,6 +3,7 @@
 %}
 
 %token BAR LT GT GTGT AND EOF
+%token <string> STRING
 %token <string> ID
 
 %start toplevel
@@ -37,7 +38,13 @@ command:
 ;
 
 args:
-  | ID        { [$1] }
-  | ID args   { $1 :: $2 }
+  | atom        { [$1] }
+  | atom args   { $1 :: $2 }
 ;
+
+atom:
+  | ID       { $1 }
+  | STRING   { $1 }
+;
+
 
