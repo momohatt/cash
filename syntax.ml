@@ -3,17 +3,17 @@ type job_status = Running | Stopping | Terminated
 type job_mode   = Foreground | Background
 
 type proc = {
-  command  : string;
-  args     : string array;
-  in_file  : string option;
-  out_file : (string * write_opt) option
+  mutable pid : int;
+  command     : string;
+  args        : string array;
+  in_file     : string option;
+  out_file    : (string * write_opt) option
 }
 
 type job = {
   procs           : proc list;
   mutable status  : job_status;
   mutable mode    : job_mode;
-  mutable job_id  : int;
   mutable pgid    : int;
   mutable command : string;
   nproc           : int;
@@ -29,13 +29,12 @@ let proc_i_to_proc (p : proc_i) : proc =
   let ((cmd, args), (in_f, out_f)) = p in
   (* include the command string to the args_a *)
   let args_a = Array.of_list (cmd :: args) in
-  { command = cmd; args = args_a; in_file = in_f; out_file = out_f }
+  { pid = 0; command = cmd; args = args_a; in_file = in_f; out_file = out_f }
 
 let job_i_to_job (j : job_i) : job =
   { procs   = List.map proc_i_to_proc (fst j);
     status  = Running;
     mode    = (snd j);
-    job_id  = 0;
     pgid    = 0;
     command = "";
     nproc   = List.length (fst j);

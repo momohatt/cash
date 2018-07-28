@@ -5,83 +5,62 @@ open ExtUnixSpecific
 exception CommandEmpty
 exception NotImplemented
 
-type env = string array
 type pipe = (file_descr * file_descr)
 
 let histfilename = ".cash_history"
 let prompt = "$ "
+let env = ref [||]
 
 let print_error eno f x =
   print_string (f ^ ": " ^ (error_message eno) ^ ": " ^ x ^ "\n");
   flush Pervasives.stdout
 
-let _setup_signals (s : Sys.signal_behavior) =
-  Sys.set_signal Sys.sigint  s;
-  Sys.set_signal Sys.sigtstp s;
-  Sys.set_signal Sys.sigttou s;
-  Sys.set_signal Sys.sigttin s;
-  Sys.set_signal Sys.sigquit s
+let to_background (j : job) (jbs : job list) =
+  tcsetpgrp stdin (getpgid 0);
+  Printf.printf "[%d] %d\n" ((List.length jbs) + 1) j.pgid;
+  flush Pervasives.stdout;
+  j :: jbs
 
-let run_job (j : job) (env : env) =
+let wait_foreground_job (j : job) (jbs : job list) =
+  let status = List.hd (List.map (fun p -> waitpid [WUNTRACED] p.pid) j.procs) in
+  tcsetpgrp stdin (getpid ());
+  match status with
+  | (_, WSTOPPED _) ->
+    j.status <- Stopping;
+    to_background j jbs
+  | _ -> jbs
+
+let run_job (j : job) (jbs : job list) =
   let nproc = List.length j.procs in
   let pipes = List.map (fun _ -> pipe ()) (List.tl j.procs) in
-  let rec _setup_pipes (p : pipe list) (procid : int) =
-    match p with
-    | [] -> ()
-    | (pin, pout) :: px ->
-      let pipeid = nproc - 1 - List.length p in
-      (match procid - pipeid with
-       | 1 -> close pout; dup2 pin stdin; close pin
-       | 0 -> close pin; dup2 pout stdout; close pout
-       | _ -> close pin; close pout);
-      _setup_pipes px procid
-  in
-  let _setup_redirect (p : proc) =
-    (match p.in_file with
-     | Some filename ->
-       let fd = openfile filename [O_RDONLY] 0o644 in
-       dup2 fd stdin; close fd
-     | None -> ());
-    (match p.out_file with
-     | Some (filename, TRUNC) ->
-       let fd = openfile filename [O_WRONLY; O_CREAT; O_TRUNC] 0o644 in
-       dup2 fd stdout; close fd
-     | Some (filename, APPEND) ->
-       let fd = openfile filename [O_WRONLY; O_CREAT; O_APPEND] 0o644 in
-       dup2 fd stdout; close fd
-     | None -> ())
-  in
   let rec _run_job (pl : proc list) (n : int) (cpid : int list) (pgid : int) =
     match pl with
     | [] ->
       let rec _close_pipe_all (p : pipe list) =
-        match p with
-        | [] -> ()
-        | (pin, pout) :: px -> close pin; close pout; _close_pipe_all px
+        List.iter (fun (pin, pout) -> close pin; close pout) p
       in
       let rec _wait_all (cpid : int list) =
-        match cpid with
-        | [] -> ()
-        | pid :: xl -> waitpid [] pid |> ignore; _wait_all xl
+        List.iter (fun pid -> waitpid [] pid |> ignore) cpid
       in
       j.pgid <- pgid;
-      let oldpgid = getpgid 0 in
-      sleepf 0.001; (* for setpgid to be effective *)
-      (match j.mode with
-       | Foreground -> tcsetpgrp stdin pgid
-       | Background -> ());
+      sleepf 0.0005; (* for setpgid to be effective *)
       _close_pipe_all pipes;
-      _wait_all cpid;
-      tcsetpgrp stdin oldpgid;
+      (match j.mode with
+       | Foreground ->
+         tcsetpgrp stdin pgid;
+         wait_foreground_job j jbs
+       | Background ->
+         to_background j jbs)
     | p :: px ->
       (match fork () with
        | 0 ->
-         _setup_pipes pipes n;
-         _setup_redirect p;
-         _setup_signals Sys.Signal_default;
+         Utils.setup_pipes pipes n nproc;
+         Utils.setup_redirect p;
+         Utils.setup_signals Sys.Signal_default;
          setpgid 0 pgid;
-         execvpe p.command p.args env
+         execvpe p.command p.args !env
        | pid ->
+         p.pid <- pid;
          match pgid with
          | 0 -> _run_job px (n + 1) (pid :: cpid) pid
          | _ -> _run_job px (n + 1) (pid :: cpid) pgid)
@@ -104,16 +83,22 @@ let exec_cd arg =
    with
    | Unix_error (eno, _, x) -> print_error eno "cd" x)
 
-let exec_fg () =
+let exec_fg (jbs : job list) =
   raise NotImplemented
 
-let exec_bg () =
+let exec_bg (jbs : job list) =
   raise NotImplemented
 
-let rec read_exec (env : env) =
+let exec_jobs (jbs : job list) =
+  let id = ref 0 in
+  let _print j = id := !id + 1; Printf.printf "[%d] %s\n" !id j.command in
+  List.iter _print jbs;
+  flush Pervasives.stdout
+
+let rec read_exec (jbs : job list) =
   match LNoise.linenoise prompt with
   | None -> () (* terminating the shell *)
-  | Some "" -> read_exec env
+  | Some "" -> read_exec jbs
   | Some input ->
     (LNoise.history_add input |> ignore;
      LNoise.history_save histfilename |> ignore;
@@ -125,13 +110,14 @@ let rec read_exec (env : env) =
         | [] -> raise CommandEmpty
         | j :: jx -> (match j.command with
             | "exit" -> ()
-            | "history" -> exec_history (); read_exec env
-            | "cd" -> exec_cd j.args.(1); read_exec env
-            | "fg" -> exec_fg ()
-            | "bg" -> exec_bg ()
-            | _ -> run_job job env; read_exec env)
+            | "history" -> exec_history (); read_exec jbs
+            | "cd" -> exec_cd j.args.(1); read_exec jbs
+            | "fg" -> exec_fg jbs
+            | "bg" -> exec_bg jbs
+            | "jobs" -> exec_jobs jbs; read_exec jbs
+            | _ -> let newjbs = run_job job jbs in read_exec newjbs)
       with
-      | Parsing.Parse_error -> print_string "Invalid input.\n"; flush Pervasives.stdout; read_exec env
+      | Parsing.Parse_error -> print_string "Invalid input.\n"; flush Pervasives.stdout; read_exec jbs
       | End_of_file -> ()))
 
 
@@ -149,8 +135,8 @@ let _ =
   LNoise.set_multiline true;
   LNoise.history_load ~filename:histfilename |> ignore;
   LNoise.history_set ~max_length:100 |> ignore;
-  _setup_signals Sys.Signal_ignore;
-  let env = environment () in read_exec env
+  Utils.setup_signals Sys.Signal_ignore;
+  env := environment (); read_exec []
 
 (*
 let _ =
