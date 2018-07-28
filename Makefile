@@ -1,5 +1,5 @@
 PACKS = linenoise extunix
-SOURCES = syntax.ml lexer.mll parser.mly utils.ml main.ml
+SOURCES = syntax.ml lexer.mll parser.mly main.ml
 RESULT  = main
 
 YFLAGS = -v

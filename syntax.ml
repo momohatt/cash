@@ -16,8 +16,7 @@ type job = {
   mutable mode    : job_mode;
   mutable pgid    : int;
   mutable command : string;
-  nproc           : int;
-  mutable nexited : int;
+  mutable nalive  : int;       (* number of processes that haven't terminated *)
 }
 
 (* (command * args) * (in_file * (out_file * out_option)) *)
@@ -37,8 +36,7 @@ let job_i_to_job (j : job_i) : job =
     mode    = (snd j);
     pgid    = 0;
     command = "";
-    nproc   = List.length (fst j);
-    nexited = 0; }
+    nalive  = List.length (fst j); }
 
 
 (*** print functions ***)
