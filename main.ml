@@ -95,54 +95,12 @@ let wait_background_job (jbs : job list) =
    | Not_found -> jbs
    | Unix_error (ECHILD, _, _) -> jbs)
 
-let run_job (j : job) (jbs : job list) =
-  let nproc = List.length j.procs in
-  let pipes = List.map (fun _ -> pipe ()) (List.tl j.procs) in
-  let rec _run_job (pl : proc list) (n : int) (cpid : int list) (pgid : int) =
-    match pl with
-    | [] ->
-      let _close_pipe_all (p : pipe list) =
-        List.iter (fun (pin, pout) -> close pin; close pout) p
-      in
-      j.pgid <- pgid;
-      sleepf 0.001; (* for setpgid to be effective *)
-      _close_pipe_all pipes;
-      (match j.mode with
-       | Foreground ->
-         tcsetpgrp stdin pgid;
-         wait_foreground_job j jbs
-       | Background ->
-         to_background j jbs)
-    | p :: px ->
-      (match fork () with
-       | 0 ->
-         setup_pipes pipes n nproc;
-         setup_redirect p;
-         set_signals Sys.Signal_default;
-         setpgid 0 pgid;
-         (try
-            execvpe p.command p.args !env
-          with
-          | Unix_error (ENOENT, "execvpe", cmd) ->
-            prerr_string ("command not found: " ^ cmd ^ "\n");
-            flush Pervasives.stderr;
-            kill 0 Sys.sigkill;
-            raise InvalidCommand)
-       | pid ->
-         p.pid <- pid;
-         match pgid with
-         | 0 -> _run_job px (n + 1) (pid :: cpid) pid
-         | _ -> _run_job px (n + 1) (pid :: cpid) pgid)
-  in
-  (try _run_job j.procs 0 [] 0 with
-   | Unix_error (eno, syscall, cmd) -> raise (MainError (errmsg eno syscall cmd)))
-
 let exec_history () =
   let channel = open_in histfilename in
   let rec _read_hist_print (n : int) =
     (try
        let str = input_line channel in
-       print_string ((string_of_int n) ^ " : " ^ str ^ "\n");
+       Printf.fprintf Pervasives.stdout "%s : %s\n" (string_of_int n) str;
        _read_hist_print (n + 1)
      with
      | End_of_file -> ())
@@ -172,8 +130,8 @@ let exec_fg (args : string array) (jbs : job list) =
      print_job_status j index; flush Pervasives.stdout;
      wait_foreground_job j newjbs
    with
-   | Failure _ -> raise (MainError "No such jobs")
-   | Invalid_argument -> raise (MainError "No such jobs"))
+   | Failure _ -> raise (MainError "No such job")
+   | Invalid_argument -> raise (MainError "No such job"))
 
 let exec_bg (args : string array) (jbs : job list) =
   (try
@@ -190,7 +148,8 @@ let exec_bg (args : string array) (jbs : job list) =
      print_job_status j index; flush Pervasives.stdout;
      jbs
    with
-   | Invalid_argument -> raise (MainError "No such jobs"))
+   | Failure _ -> raise (MainError "No such job")
+   | Invalid_argument -> raise (MainError "No such job"))
 
 let exec_jobs (jbs : job list) =
   let id = ref 0 in
@@ -198,6 +157,55 @@ let exec_jobs (jbs : job list) =
   in
   List.iter _print jbs;
   flush Pervasives.stdout
+
+let run_job (j : job) (jbs : job list) =
+  let nproc = List.length j.procs in
+  let pipes = List.map (fun _ -> pipe ()) (List.tl j.procs) in
+  let rec _run_job (pl : proc list) (n : int) (cpid : int list) (pgid : int) =
+    match pl with
+    | [] ->
+      let _close_pipe_all (p : pipe list) =
+        List.iter (fun (pin, pout) -> close pin; close pout) p
+      in
+      j.pgid <- pgid;
+      sleepf 0.001; (* for setpgid to be effective *)
+      _close_pipe_all pipes;
+      (match j.mode with
+       | Foreground ->
+         tcsetpgrp stdin pgid;
+         wait_foreground_job j jbs
+       | Background ->
+         to_background j jbs)
+    | p :: px ->
+      (match fork () with
+       | 0 ->
+         setup_pipes pipes n nproc;
+         setup_redirect p;
+         set_signals Sys.Signal_default;
+         setpgid 0 pgid;
+         let myexecvpe cmd args env jbs =
+           match cmd with
+           | "history" -> sleepf 0.01; exec_history (); jbs
+           | "cd"      -> sleepf 0.01; exec_cd args; jbs
+           | "jobs"    -> sleepf 0.01; exec_jobs jbs; jbs
+           | _         -> execvpe cmd args env
+         in
+         (try
+            myexecvpe p.command p.args !env jbs
+          with
+          | Unix_error (ENOENT, "execvpe", cmd) ->
+            prerr_string ("command not found: " ^ cmd ^ "\n");
+            flush Pervasives.stderr;
+            kill 0 Sys.sigkill;
+            raise InvalidCommand)
+       | pid ->
+         p.pid <- pid;
+         match pgid with
+         | 0 -> _run_job px (n + 1) (pid :: cpid) pid
+         | _ -> _run_job px (n + 1) (pid :: cpid) pgid)
+  in
+  (try _run_job j.procs 0 [] 0 with
+   | Unix_error (eno, syscall, cmd) -> raise (MainError (errmsg eno syscall cmd)))
 
 let rec read_exec (ojbs : job list) =
   let jbs = wait_background_job ojbs in
@@ -213,14 +221,11 @@ let rec read_exec (ojbs : job list) =
         job.command <- input;
         match job.procs with
         | [] -> raise CommandEmpty
-        | j :: jx -> (match j.command with
+        | p :: px -> (match p.command with
             | "exit" -> ()
-            | "history" -> exec_history (); read_exec jbs
-            | "cd"      -> exec_cd j.args; read_exec jbs
-            | "fg"      -> let newjbs = exec_fg j.args jbs in read_exec newjbs
-            | "bg"      -> let newjbs = exec_bg j.args jbs in read_exec newjbs
-            | "jobs"    -> exec_jobs jbs; read_exec jbs
-            | _ -> let newjbs = run_job job jbs in read_exec newjbs)
+            | "fg"   -> let newjbs = exec_fg p.args jbs in read_exec newjbs
+            | "bg"   -> let newjbs = exec_bg p.args jbs in read_exec newjbs
+            | _      -> let newjbs = run_job job jbs in read_exec newjbs)
       with
       | Parsing.Parse_error ->
         prerr_string "Invalid input.\n"; flush Pervasives.stderr; read_exec jbs
