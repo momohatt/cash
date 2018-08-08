@@ -1,72 +1,24 @@
 open Syntax
+open Utils
 open Unix
 open ExtUnixSpecific
 
 exception MainError of string
-exception CommandEmpty
+exception NotReached
 exception Invalid_argument
 exception InvalidCommand
-
-type pipe = (file_descr * file_descr)
 
 let histfilename = ".cash_history"
 let prompt = "$ "
 let env = ref [||]
 
-let errmsg eno f arg =
-  Printf.sprintf "%s: %s: %s" (error_message eno) f arg
-
-let print_job_status (j : job) (i : int) =
-  match j.status with
-  | Running    -> Printf.printf "[%d] (pid: %d) Running   : %s\n" i j.pgid j.command
-  | Stopped    -> Printf.printf "[%d] (pid: %d) Stopped   : %s\n" i j.pgid j.command
-  | Terminated -> Printf.printf "[%d] (pid: %d) Terminated: %s\n" i j.pgid j.command
-
-let set_signals (s : Sys.signal_behavior) =
-  Sys.set_signal Sys.sigint  s;
-  Sys.set_signal Sys.sigtstp s;
-  Sys.set_signal Sys.sigttou s;
-  Sys.set_signal Sys.sigttin s;
-  Sys.set_signal Sys.sigquit s
-
-let rec setup_pipes (p : pipe list) (procid : int) (nproc : int) =
-  match p with
-  | [] -> ()
-  | (pin, pout) :: px ->
-    let pipeid = nproc - 1 - List.length p in
-    (match procid - pipeid with
-     | 1 -> close pout; dup2 pin stdin; close pin
-     | 0 -> close pin; dup2 pout stdout; close pout
-     | _ -> close pin; close pout);
-    setup_pipes px procid nproc
-
-let setup_redirect (p : proc) =
-  (match p.in_file with
-   | Some filename ->
-     let fd = openfile filename [O_RDONLY] 0o644 in
-     dup2 fd stdin; close fd
-   | None -> ());
-  (match p.out_file with
-   | Some (filename, TRUNC) ->
-     let fd = openfile filename [O_WRONLY; O_CREAT; O_TRUNC] 0o644 in
-     dup2 fd stdout; close fd
-   | Some (filename, APPEND) ->
-     let fd = openfile filename [O_WRONLY; O_CREAT; O_APPEND] 0o644 in
-     dup2 fd stdout; close fd
-   | None -> ())
-
-let rec remove (a : 'a) (l : 'a list) =
-  match l with
-  | [] -> []
-  | x :: xl -> match (a = x) with
-    | true -> xl
-    | false -> x :: (remove a xl)
 
 let to_background (j : job) (jbs : job list) =
   tcsetpgrp stdin (getpgid 0);
   print_job_status j ((List.length jbs) + 1);
   flush Pervasives.stdout;
   jbs @ [j]
+
 
 let wait_foreground_job (j : job) (jbs : job list) =
   let status = List.hd (List.map (fun p -> waitpid [WUNTRACED] p.pid) j.procs) in
@@ -76,6 +28,7 @@ let wait_foreground_job (j : job) (jbs : job list) =
     j.status <- Stopped;
     to_background j jbs
   | _ -> []
+
 
 let wait_background_job (jbs : job list) =
   let rec handle_terminated_proc (pid : int) (jbs : job list) =
@@ -95,22 +48,25 @@ let wait_background_job (jbs : job list) =
    | Not_found -> jbs
    | Unix_error (ECHILD, _, _) -> jbs)
 
-let exec_history () =
+
+let exec_history (outfd : out_channel) =
   let channel = open_in histfilename in
   let rec _read_hist_print (n : int) =
     (try
        let str = input_line channel in
-       Printf.fprintf Pervasives.stdout "%s : %s\n" (string_of_int n) str;
+       Printf.fprintf outfd "%s : %s\n" (string_of_int n) str;
        _read_hist_print (n + 1)
      with
      | End_of_file -> ())
   in _read_hist_print 0; flush Pervasives.stdout
 
-let exec_cd arg =
+
+let exec_cd (arg : string array) =
   match Array.length arg with
   | 1 -> chdir (getenv "HOME")
   | _ -> (try chdir arg.(1) with
       | Unix_error (eno, _, x) -> raise (MainError (errmsg eno "cd" x)))
+
 
 let exec_fg (args : string array) (jbs : job list) =
   (try
@@ -133,6 +89,7 @@ let exec_fg (args : string array) (jbs : job list) =
    | Failure _ -> raise (MainError "No such job")
    | Invalid_argument -> raise (MainError "No such job"))
 
+
 let exec_bg (args : string array) (jbs : job list) =
   (try
      let index = match Array.length args with
@@ -151,61 +108,75 @@ let exec_bg (args : string array) (jbs : job list) =
    | Failure _ -> raise (MainError "No such job")
    | Invalid_argument -> raise (MainError "No such job"))
 
-let exec_jobs (jbs : job list) =
+
+let exec_jobs (jbs : job list) (outfd : out_channel) =
   let id = ref 0 in
-  let _print j = id := !id + 1; print_job_status j !id;
+  let _print j = id := !id + 1; fprint_job_status j !id outfd;
   in
   List.iter _print jbs;
   flush Pervasives.stdout
 
+
 let run_job (j : job) (jbs : job list) =
   let nproc = List.length j.procs in
   let pipes = List.map (fun _ -> pipe ()) (List.tl j.procs) in
+  let _close_pipe_all (p : pipe list) =
+    List.iter (fun (pin, pout) -> close pin; close pout) p
+  in
   let rec _run_job (pl : proc list) (n : int) (cpid : int list) (pgid : int) =
     match pl with
     | [] ->
-      let _close_pipe_all (p : pipe list) =
-        List.iter (fun (pin, pout) -> close pin; close pout) p
-      in
       j.pgid <- pgid;
       sleepf 0.001; (* for setpgid to be effective *)
       _close_pipe_all pipes;
       (match j.mode with
        | Foreground ->
-         tcsetpgrp stdin pgid;
-         wait_foreground_job j jbs
+         (match pgid with
+          | 0 -> jbs
+          | _ -> tcsetpgrp stdin pgid; wait_foreground_job j jbs)
        | Background ->
          to_background j jbs)
     | p :: px ->
-      (match fork () with
-       | 0 ->
-         setup_pipes pipes n nproc;
-         setup_redirect p;
-         set_signals Sys.Signal_default;
-         setpgid 0 pgid;
-         let myexecvpe cmd args env jbs =
-           match cmd with
-           | "history" -> sleepf 0.01; exec_history (); jbs
-           | "cd"      -> sleepf 0.01; exec_cd args; jbs
-           | "jobs"    -> sleepf 0.01; exec_jobs jbs; jbs
-           | _         -> execvpe cmd args env
-         in
-         (try
-            myexecvpe p.command p.args !env jbs
-          with
-          | Unix_error (ENOENT, "execvpe", cmd) ->
-            prerr_string ("command not found: " ^ cmd ^ "\n");
-            flush Pervasives.stderr;
-            kill 0 Sys.sigkill;
-            raise InvalidCommand)
-       | pid ->
-         p.pid <- pid;
-         match pgid with
-         | 0 -> _run_job px (n + 1) (pid :: cpid) pid
-         | _ -> _run_job px (n + 1) (pid :: cpid) pgid)
+      (match p.command with
+       | "history" ->
+         let (_, fdout) = setup_pipes_nodup pipes n nproc in
+         (match fdout with
+          | Some f -> exec_history (out_channel_of_descr f)
+          | None   -> exec_history Pervasives.stdout);
+         _run_job px (n + 1) cpid pgid
+       | "cd" ->
+         _close_pipe_all pipes;
+         exec_cd p.args;
+         _run_job px (n + 1) cpid pgid
+       | "jobs" ->
+         let (_, fdout) = setup_pipes_nodup pipes n nproc in
+         (match fdout with
+          | Some f -> exec_jobs jbs (out_channel_of_descr f)
+          | None   -> exec_jobs jbs Pervasives.stdout);
+         _run_job px (n + 1) cpid pgid
+       | _         -> (match fork () with
+           | 0 ->
+             setup_pipes pipes n nproc;
+             setup_redirect p;
+             set_signals Sys.Signal_default;
+             setpgid 0 pgid;
+             (try
+                execvpe p.command p.args !env
+              with
+              | Unix_error (ENOENT, "execvpe", cmd) ->
+                prerr_string ("command not found: " ^ cmd ^ "\n");
+                flush Pervasives.stderr;
+                kill 0 Sys.sigkill;
+                raise InvalidCommand)
+           | pid ->
+             p.pid <- pid;
+             match pgid with
+             | 0 -> _run_job px (n + 1) (pid :: cpid) pid
+             | _ -> _run_job px (n + 1) (pid :: cpid) pgid))
   in
   (try _run_job j.procs 0 [] 0 with
    | Unix_error (eno, syscall, cmd) -> raise (MainError (errmsg eno syscall cmd)))
+
 
 let rec read_exec (ojbs : job list) =
   let jbs = wait_background_job ojbs in
@@ -220,7 +191,7 @@ let rec read_exec (ojbs : job list) =
         let job = Syntax.job_i_to_job job_i in
         job.command <- input;
         match job.procs with
-        | [] -> raise CommandEmpty
+        | [] -> raise NotReached
         | p :: px -> (match p.command with
             | "exit" -> ()
             | "fg"   -> let newjbs = exec_fg p.args jbs in read_exec newjbs
@@ -234,6 +205,7 @@ let rec read_exec (ojbs : job list) =
       | InvalidCommand -> read_exec jbs
       | End_of_file -> ()))
 
+
 let rec read_print () =
   print_string "$ ";
   flush Pervasives.stdout;
@@ -242,6 +214,7 @@ let rec read_print () =
   let job = Syntax.job_i_to_job job_i in
   (print_job job;
    read_print ())
+
 
 let _ =
   openfile histfilename [O_RDWR; O_APPEND; O_CREAT] 0o600 |> ignore;
