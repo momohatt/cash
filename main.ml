@@ -49,23 +49,25 @@ let wait_background_job (jbs : job list) =
    | Unix_error (ECHILD, _, _) -> jbs)
 
 
-let exec_history (outfd : out_channel) =
+let exec_history () =
   let channel = open_in histfilename in
   let rec _read_hist_print (n : int) =
     (try
        let str = input_line channel in
-       Printf.fprintf outfd "%s : %s\n" (string_of_int n) str;
+       Printf.printf "%s : %s\n" (string_of_int n) str;
        _read_hist_print (n + 1)
      with
      | End_of_file -> ())
-  in _read_hist_print 0; flush Pervasives.stdout
+  in _read_hist_print 0; flush Pervasives.stdout;
+  sys_exit 0
 
 
 let exec_cd (arg : string array) =
-  match Array.length arg with
-  | 1 -> chdir (getenv "HOME")
-  | _ -> (try chdir arg.(1) with
-      | Unix_error (eno, _, x) -> raise (MainError (errmsg eno "cd" x)))
+  (match Array.length arg with
+   | 1 -> chdir (getenv "HOME")
+   | _ -> (try chdir arg.(1) with
+       | Unix_error (eno, _, x) -> raise (MainError (errmsg eno "cd" x))));
+  sys_exit 0
 
 
 let exec_fg (args : string array) (jbs : job list) =
@@ -109,12 +111,13 @@ let exec_bg (args : string array) (jbs : job list) =
    | Invalid_argument -> raise (MainError "No such job"))
 
 
-let exec_jobs (jbs : job list) (outfd : out_channel) =
+let exec_jobs (jbs : job list) =
   let id = ref 0 in
-  let _print j = id := !id + 1; fprint_job_status j !id outfd;
+  let _print j = id := !id + 1; print_job_status j !id;
   in
   List.iter _print jbs;
-  flush Pervasives.stdout
+  flush Pervasives.stdout;
+  sys_exit 0
 
 
 let run_job (j : job) (jbs : job list) =
@@ -137,42 +140,29 @@ let run_job (j : job) (jbs : job list) =
        | Background ->
          to_background j jbs)
     | p :: px ->
-      (match p.command with
-       | "history" ->
-         let (_, fdout) = setup_pipes_nodup pipes n nproc in
-         (match fdout with
-          | Some f -> exec_history (out_channel_of_descr f)
-          | None   -> exec_history Pervasives.stdout);
-         _run_job px (n + 1) cpid pgid
-       | "cd" ->
-         _close_pipe_all pipes;
-         exec_cd p.args;
-         _run_job px (n + 1) cpid pgid
-       | "jobs" ->
-         let (_, fdout) = setup_pipes_nodup pipes n nproc in
-         (match fdout with
-          | Some f -> exec_jobs jbs (out_channel_of_descr f)
-          | None   -> exec_jobs jbs Pervasives.stdout);
-         _run_job px (n + 1) cpid pgid
-       | _         -> (match fork () with
-           | 0 ->
-             setup_pipes pipes n nproc;
-             setup_redirect p;
-             set_signals Sys.Signal_default;
-             setpgid 0 pgid;
-             (try
-                execvpe p.command p.args !env
-              with
-              | Unix_error (ENOENT, "execvpe", cmd) ->
-                prerr_string ("command not found: " ^ cmd ^ "\n");
-                flush Pervasives.stderr;
-                kill 0 Sys.sigkill;
-                raise InvalidCommand)
-           | pid ->
-             p.pid <- pid;
-             match pgid with
-             | 0 -> _run_job px (n + 1) (pid :: cpid) pid
-             | _ -> _run_job px (n + 1) (pid :: cpid) pgid))
+      (match fork () with
+       | 0 ->
+         setup_pipes pipes n nproc;
+         setup_redirect p;
+         set_signals Sys.Signal_default;
+         setpgid 0 pgid;
+         (try
+            match p.command with
+            | "history" -> exec_history ()
+            | "cd"      -> exec_cd p.args
+            | "jobs"    -> exec_jobs jbs
+            | _         -> execvpe p.command p.args !env
+          with
+          | Unix_error (ENOENT, "execvpe", cmd) ->
+            prerr_string ("command not found: " ^ cmd ^ "\n");
+            flush Pervasives.stderr;
+            kill 0 Sys.sigkill;
+            raise InvalidCommand)
+       | pid ->
+         p.pid <- pid;
+         match pgid with
+         | 0 -> _run_job px (n + 1) (pid :: cpid) pid
+         | _ -> _run_job px (n + 1) (pid :: cpid) pgid)
   in
   (try _run_job j.procs 0 [] 0 with
    | Unix_error (eno, syscall, cmd) -> raise (MainError (errmsg eno syscall cmd)))
