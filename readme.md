@@ -22,7 +22,6 @@
 
 ## TODO
 
-* pipes with built-in commands (`history | head` doesn't work)
 * shell expansion (`*` and `~`)
 * in/out redirections with stderr
 * command substitution (backquotes)
